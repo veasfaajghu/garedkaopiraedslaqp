@@ -1,0 +1,151 @@
+name: 🚀 Deploy Full Stack (Docker Compose Shared Engine)
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_url:
+        description: 'Optional Remote .env URL (GCP / S3 / R2 / Gist)'
+        required: false
+        default: ''
+      compose_url:
+        description: 'Optional Remote docker-compose.yml URL'
+        required: false
+        default: ''
+
+jobs:
+  deploy-compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # Keep alive for up to 6 hours
+    permissions:
+      contents: read
+      packages: read # Allows pulling private GHCR container images
+    
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔑 Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.MY_GITHUB_ACTOR || github.actor }}
+          password: ${{ secrets.MY_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: 🛡️ Establish Cloudflare WARP Ghost Tunnel
+        uses: fscarmen/warp-on-actions@v1.2
+        with:
+          stack: ipv4 # Enables IPv4 routing only to prevent IPv6 drops
+
+      - name: ⚙️ Prepare Environment & Shared Directories
+        env:
+          ENV_URL: ${{ inputs.env_url || secrets.ENV_URL }}
+          ENV_FILE_CONTENT: ${{ secrets.ENV_FILE }}
+        run: |
+          echo "Setting up runtime environment configuration..."
+          
+          # Tier 1: Download from Remote Cloud Storage URL (GCP / S3 / Gist)
+          if [ -n "$ENV_URL" ]; then
+            echo "🌐 Detected Remote ENV URL. Downloading configuration from cloud..."
+            if curl -fsSL "$ENV_URL" -o .env && [ -s .env ]; then
+              echo "✅ Successfully downloaded .env from remote storage ($ENV_URL)"
+            else
+              echo "⚠️ Failed to download from ENV_URL! Falling back to Secret/Local..."
+              rm -f .env
+            fi
+          fi
+
+          # Tier 2: Fallback to GitHub Secret ENV_FILE
+          if [ ! -s .env ]; then
+            if [ -n "$ENV_FILE_CONTENT" ]; then
+              echo "$ENV_FILE_CONTENT" > .env
+              echo "✅ Loaded production credentials from GitHub Secret ENV_FILE"
+            elif [ -f sample.env ]; then
+              cp sample.env .env
+              echo "⚠️ Using sample.env template fallback"
+            else
+              echo "❌ Error: No .env found! Please provide ENV_URL or ENV_FILE secret."
+              exit 1
+            fi
+          fi
+
+          mkdir -p rclone_config web/static/media_images
+
+      - name: 🐳 Prepare Docker Compose Configuration
+        env:
+          COMPOSE_URL: ${{ inputs.compose_url || secrets.COMPOSE_URL }}
+          COMPOSE_FILE_CONTENT: ${{ secrets.COMPOSE_FILE }}
+        run: |
+          # Tier 1: Download docker-compose.yml from remote storage if URL provided
+          if [ -n "$COMPOSE_URL" ]; then
+            echo "🌐 Detected Remote Compose URL. Downloading docker-compose.yml from cloud..."
+            if curl -fsSL "$COMPOSE_URL" -o docker-compose.yml && [ -s docker-compose.yml ]; then
+              echo "✅ Successfully downloaded docker-compose.yml from remote storage ($COMPOSE_URL)"
+            else
+              echo "⚠️ Failed to download from COMPOSE_URL! Falling back to Secret/Local..."
+              rm -f docker-compose.yml
+            fi
+          fi
+
+          # Tier 2: Fallback to GitHub Secret COMPOSE_FILE
+          if [ ! -s docker-compose.yml ]; then
+            if [ -n "$COMPOSE_FILE_CONTENT" ]; then
+              echo "$COMPOSE_FILE_CONTENT" > docker-compose.yml
+              echo "✅ Loaded docker-compose.yml from GitHub Secret COMPOSE_FILE"
+            elif [ ! -f docker-compose.yml ]; then
+              echo "❌ Error: No docker-compose.yml found! Please provide COMPOSE_URL, COMPOSE_FILE secret, or commit docker-compose.yml."
+              exit 1
+            fi
+          fi
+
+      - name: 🚀 Launch Dual Services via Docker Compose
+        env:
+          CUSTOM_IMAGE_WEB: ${{ secrets.IMAGE_WEB }}
+          CUSTOM_IMAGE_TELEGRAM: ${{ secrets.IMAGE_TELEGRAM }}
+        run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          export IMAGE_WEB="${CUSTOM_IMAGE_WEB:-ghcr.io/${REPO_LOWER}:latest}"
+          export IMAGE_TELEGRAM="${CUSTOM_IMAGE_TELEGRAM:-ghcr.io/${REPO_LOWER}-telegram:latest}"
+          
+          echo "====================================================="
+          echo "🐳 Launching Docker Compose with Target Images:"
+          echo "🌐 Web Image:      $IMAGE_WEB"
+          echo "🎵 Telegram Image: $IMAGE_TELEGRAM"
+          echo "====================================================="
+          
+          docker compose pull || true
+          docker compose up -d
+
+      - name: 🚇 Install & Setup Cloudflare HTTP/2 Tunnels
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+          
+          # Tunnel for Web UI (Port 5001)
+          cloudflared tunnel --protocol http2 --url http://127.0.0.1:5001 > cloudflared_web.log 2>&1 &
+          
+          # Tunnel for Telegram Stream Proxy (Port 5000)
+          cloudflared tunnel --protocol http2 --url http://127.0.0.1:5000 > cloudflared_tg.log 2>&1 &
+
+      - name: 🌐 Announce Public Live URLs
+        run: |
+          echo "Waiting for Cloudflare tunnels to establish..."
+          while ! grep -q 'https://[-0-9a-z]*\.trycloudflare\.com' cloudflared_web.log; do sleep 3; done
+          while ! grep -q 'https://[-0-9a-z]*\.trycloudflare\.com' cloudflared_tg.log; do sleep 3; done
+          
+          WEB_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' cloudflared_web.log | head -n1)
+          TG_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' cloudflared_tg.log | head -n1)
+          
+          echo "====================================================="
+          echo "🌌 DOCKER COMPOSE SHARED STACK ONLINE"
+          echo "🌐 Web UI: $WEB_URL"
+          echo "🎵 Stream Proxy: $TG_URL"
+          echo "====================================================="
+          
+          if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
+            curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"🌌 **Docker Compose Shared Stack Online!**\n🌐 Web UI: $WEB_URL\n🎵 Stream Proxy: $TG_URL\"}" ${{ secrets.DISCORD_WEBHOOK_URL }}
+          fi
+
+      - name: 📜 Follow Live Container Logs (Keep-Alive)
+        run: |
+          echo "Streaming live combined logs from both containers..."
+          docker compose logs -f
