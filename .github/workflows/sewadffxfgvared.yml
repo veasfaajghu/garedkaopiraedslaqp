@@ -1,0 +1,116 @@
+name: Standalone Android Spoofer
+
+on:
+  workflow_dispatch:
+    inputs:
+      ghcr_username:
+        description: 'Your Main GitHub Username (e.g. tvkk0539)'
+        required: true
+        type: string
+      image_tag:
+        description: 'Which image do you want to run?'
+        required: true
+        default: 'latest'
+        type: choice
+        options:
+          - latest
+          - playstore
+          - unrooted
+          - unrooted-playstore
+      proxy_url:
+        description: 'SOCKS5 Proxy (e.g. socks5://user:pass@ip:port) — Leave empty for no proxy'
+        required: false
+        default: ''
+        type: string
+      proxy_country:
+        description: 'Force proxy country code (e.g. US, GB, DE) — Auto-detected if empty'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  run-android-sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 
+    
+    steps:
+      - name: 🚀 Boot Pre-Built Spoofed Emulator & Web Streamer
+        run: |
+          echo "Creating virtual network..."
+          docker network create droid-net
+          
+          # Build the proxy environment flags
+          PROXY_FLAGS=""
+          if [ -n "${{ github.event.inputs.proxy_url }}" ]; then
+            PROXY_FLAGS="-e PROXY_URL=${{ github.event.inputs.proxy_url }}"
+            echo "🌐 PROXY: ${{ github.event.inputs.proxy_url }}"
+          fi
+          
+          COUNTRY_FLAGS=""
+          if [ -n "${{ github.event.inputs.proxy_country }}" ]; then
+            COUNTRY_FLAGS="-e PROXY_COUNTRY=${{ github.event.inputs.proxy_country }}"
+            echo "🌍 COUNTRY: ${{ github.event.inputs.proxy_country }}"
+          fi
+          
+          echo "Booting Custom Headless Android Emulator with Ghost Mode..."
+          docker run -d --privileged --name android-core --network droid-net \
+            -e ENABLE_GHOST_MODE=true \
+            $PROXY_FLAGS \
+            $COUNTRY_FLAGS \
+            ghcr.io/${{ github.event.inputs.ghcr_username }}/neon-spoofer:${{ github.event.inputs.image_tag }}
+            
+          echo "Booting Web Touch Streamer (scrcpy-web)..."
+          docker run -d --name web-streamer --network droid-net \
+            -e ADB_SERVER_ADDR=android-core \
+            -e ADB_SERVER_PORT=5555 \
+            -p 8000:8000 \
+            emptysuns/scrcpy-web:v0.1
+            
+          echo "Automating ADB Bridge connection..."
+          docker exec -d web-streamer /bin/sh -c "while true; do adb connect android-core:5555; sleep 10; done"
+
+          # Wait for emulator boot + Ghost Mode patching cycle
+          # Timeline: Boot (~60s) → patch_system_build_props (~120s: root+remount+sed+reboot)
+          echo "⏳ Waiting for emulator boot (Phase 1: ~60 seconds)..."
+          sleep 60
+          echo ""
+          echo "======= PHASE 1: BOOT LOGS ======="
+          docker logs android-core 2>&1 | tail -30
+          echo "==================================="
+          echo ""
+          echo "⏳ Waiting for Ghost Mode patching (Phase 2: ~4 minutes)..."
+          echo "   (adb root → adb remount → build.prop sed → reboot → verify)"
+          sleep 240
+          echo ""
+          echo "======= PHASE 2: GHOST MODE LOGS ======="
+          docker logs android-core 2>&1 | grep -A 100 "NUCLEAR\|GHOST MODE\|build.prop\|patch\|After reboot\|FAILED\|✅\|❌\|Boot completed" | tail -60
+          echo "========================================="
+          echo ""
+          echo "======= FULL EMULATOR LOGS (last 100 lines) ======="
+          docker logs android-core 2>&1 | tail -100
+          echo "===================================================="
+
+      - name: 🌐 Establish Cloudflare Tunnel
+        run: |
+          echo "Installing Cloudflared..."
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb
+          
+          echo "Starting Tunnel to Web Streamer (Port 8000)..."
+          cloudflared tunnel --protocol http2 --url http://127.0.0.1:8000 > cloudflared.log 2>&1 &
+          
+          echo "Waiting for URL..."
+          while ! grep -q 'https://[-0-9a-z]*\.trycloudflare\.com' cloudflared.log; do
+            sleep 5
+          done
+          
+          CF_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' cloudflared.log | head -n1)
+          echo "====================================================="
+          echo "📱 SPOOFED ANDROID STREAM URL: $CF_URL"
+          echo "====================================================="
+          
+          if [ -n "${{ secrets.DISCORD_WEBHOOK_URL }}" ]; then
+            curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"📱 Spoofed Android Sandbox Online!**\n🔗 Link: $CF_URL\n👻 **Mode: ${{ github.event.inputs.image_tag }}\n🌐 Proxy: ${{ github.event.inputs.proxy_url || 'None' }}\"}" ${{ secrets.DISCORD_WEBHOOK_URL }}
+          fi
+          
+          sleep 6h
