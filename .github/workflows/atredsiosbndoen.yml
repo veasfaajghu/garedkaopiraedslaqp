@@ -1,0 +1,44 @@
+name: Public Self-Contained Proxy Deployer
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_name:
+        description: 'Name of this proxy node'
+        required: true
+        default: 'Public-Matrix-Node'
+
+jobs:
+  deploy-proxy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Start Dependency Matrix (Proxy)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          IMAGE_URL: ${{ secrets.IMAGE_URL }}
+        run: |
+          if [ -z "$IMAGE_URL" ]; then
+            echo "🚨 Error: IMAGE_URL secret is missing! Please add your Docker image URL (e.g., ghcr.io/username/repo/stealth-proxy:latest) to GitHub Secrets."
+            exit 1
+          fi
+          
+          echo "🚀 Pulling and starting proxy image: $IMAGE_URL"
+          
+          # The Docker container handles EVERYTHING internally now
+          docker run -d --name proxy-matrix -p 8080:8080 \
+            -e NO_WARP=false \
+            -e TG_BOT_TOKEN="${TG_BOT_TOKEN}" \
+            -e TG_CHAT_ID="${TG_CHAT_ID}" \
+            -e DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL}" \
+            "${IMAGE_URL}"
+            
+      - name: Maintain Active Cache Matrix (Keep-Alive)
+        run: |
+          # Keep the runner alive so the proxy stays online
+          docker logs -f proxy-matrix
