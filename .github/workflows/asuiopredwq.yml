@@ -31,20 +31,28 @@ jobs:
             exit 1
           fi
 
-      - name: Start tmate Interactive SSH & Web Shell Session
-        uses: mxschmitt/action-tmate@v3
-        with:
-          detached: true
-          limit-access-to-actor: false
-          install-dependencies: false
-
-      - name: Send Shell Links to Discord & Console
+      - name: Start Standalone tmate SSH & Web Shell Session
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          sleep 3
-          TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null || true)
-          TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}' 2>/dev/null || true)
+          echo "[+] Downloading official standalone static tmate binary..."
+          curl -sL "https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz" | tar -xJ -C /tmp
+          sudo mv /tmp/tmate-2.4.0-static-linux-amd64/tmate /usr/local/bin/tmate
+          sudo chmod +x /usr/local/bin/tmate
+          
+          # Generate fresh dummy SSH key non-interactively if missing
+          mkdir -p ~/.ssh
+          if [ ! -f ~/.ssh/id_rsa ]; then
+            ssh-keygen -t rsa -N "" -f ~/.ssh/id_rsa -q
+          fi
+
+          echo "[+] Initializing tmate background session..."
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          
+          TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
+          
           echo "=================================================================="
           echo "⚡ TMATE SSH & WEB TERMINAL ARE READY!"
           echo "   SSH Command:    $TMATE_SSH"
@@ -55,7 +63,7 @@ jobs:
 
           if [ -n "$DISCORD_WEBHOOK_URL" ] && [ -n "$TMATE_WEB" ]; then
             echo "[+] Sending tmate SSH & Web Terminal links to Discord..."
-            curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"⚡ Windows Runner Interactive Shell is READY**\n\n💻 **SSH Command: \`$TMATE_SSH\`\n🌐 Web Terminal: $TMATE_WEB\n⏱️ Runner: GitHub Actions (Ubuntu x86_64)\"}" "$DISCORD_WEBHOOK_URL" || true
+            curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"⚡ **Windows Runner Interactive Shell is READY**\n\n💻 **SSH Command:** \`$TMATE_SSH\`\n🌐 **Web Terminal:** $TMATE_WEB\n⏱️ **Runner:** GitHub Actions (Ubuntu x86_64)\"}" "$DISCORD_WEBHOOK_URL" || true
           fi
 
       - name: Install Cloudflared Tunnel
@@ -103,7 +111,7 @@ jobs:
 
               if [ -n "$DISCORD_WEBHOOK_URL" ]; then
                 echo "[+] Sending Desktop URL directly to Discord..."
-                curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 Windows KVM Node LIVE (Approach B)**\n\n🖥️ **Web Desktop: $TUNNEL_URL\n💻 SSH: \`$tmate_ssh\`\n🌐 Web Shell: $tmate_web\n⚡ KVM Acceleration: ENABLED (/dev/kvm)\"}" "$DISCORD_WEBHOOK_URL" || true
+                curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 **Windows KVM Node LIVE (Approach B)**\n\n🖥️ **Web Desktop:** $TUNNEL_URL\n💻 **SSH:** \`$tmate_ssh\`\n🌐 **Web Shell:** $tmate_web\n⚡ **KVM Acceleration:** ENABLED (/dev/kvm)\"}" "$DISCORD_WEBHOOK_URL" || true
               fi
               break
             fi
@@ -121,3 +129,4 @@ jobs:
           while tmate -S /tmp/tmate.sock has-session 2>/dev/null; do
             sleep 10
           done
+          
