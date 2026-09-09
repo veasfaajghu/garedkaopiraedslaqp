@@ -31,9 +31,39 @@ jobs:
             exit 1
           fi
 
+      - name: Start tmate Interactive SSH & Web Shell Session (Foreground Access)
+        id: setup-tmate
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          echo "[+] Installing and initializing tmate..."
+          sudo apt-get update -y > /dev/null 2>&1
+          sudo apt-get install -y tmate openssh-client > /dev/null 2>&1
+          
+          # Start background tmate socket
+          tmate -S /tmp/tmate.sock new-session -d
+          tmate -S /tmp/tmate.sock wait tmate-ready
+          
+          TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
+          TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
+          
+          echo "=================================================================="
+          echo "⚡ TMATE SSH & WEB TERMINAL ARE READY!"
+          echo "   SSH Command:    $TMATE_SSH"
+          echo "   Web Shell URL:  $TMATE_WEB"
+          echo "=================================================================="
+          
+          echo "tmate_ssh=$TMATE_SSH" >> $GITHUB_ENV
+          echo "tmate_web=$TMATE_WEB" >> $GITHUB_ENV
+
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            echo "[+] Sending tmate SSH & Web Terminal links to Discord..."
+            curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"⚡ Windows Runner Interactive Shell is READY**\n\n💻 **SSH Command: \`$TMATE_SSH\`\n🌐 Web Terminal: $TMATE_WEB\n⏱️ Runner: GitHub Actions (Ubuntu x86_64)\"}" "$DISCORD_WEBHOOK_URL" || true
+          fi
+
       - name: Install Cloudflared Tunnel
         run: |
-          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          curl -sL --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           rm cloudflared.deb
 
@@ -65,10 +95,10 @@ jobs:
           cloudflared tunnel --url http://127.0.0.1:8006 > tunnel.log 2>&1 &
           
           # Wait for public URL to appear in tunnel.log
-          for i in {1..20}; do
+          for i in {1..30}; do
             TUNNEL_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" tunnel.log | head -n 1 || true)
             if [ -n "$TUNNEL_URL" ]; then
-              echo "🎉 SUCCESS! Your Windows Web Desktop is LIVE at:"
+echo "🎉 SUCCESS! Your Windows Web Desktop is LIVE at:"
               echo ""
               echo "      👉 $TUNNEL_URL 👈"
               echo ""
@@ -76,15 +106,21 @@ jobs:
 
               if [ -n "$DISCORD_WEBHOOK_URL" ]; then
                 echo "[+] Sending Desktop URL directly to Discord..."
-                curl -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 Windows KVM Node LIVE (Approach B)**\n\n🖥️ **Web Desktop: $TUNNEL_URL\n⚡ KVM Acceleration: ENABLED (/dev/kvm)\n⏱️ Runner: GitHub Actions (Ubuntu x86_64)\"}" "$DISCORD_WEBHOOK_URL" || true
+                curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 Windows KVM Node LIVE (Approach B)**\n\n🖥️ **Web Desktop: $TUNNEL_URL\n💻 SSH: \`$tmate_ssh\`\n🌐 Web Shell: $tmate_web\n⚡ KVM Acceleration: ENABLED (/dev/kvm)\"}" "$DISCORD_WEBHOOK_URL" || true
               fi
               break
             fi
             sleep 2
           done
 
-      - name: Start SSH Interactive Session (tmate)
-        uses: mxschmitt/action-tmate@v3
-        with:
-          detached: false
-          limit-access-to-actor: false
+      - name: Keep Runner Alive For Interactive Work
+        run: |
+          echo "=================================================================="
+          echo "🟢 Runner session is ACTIVE. Connect via tmate or Web Desktop!"
+          echo "   SSH:     $tmate_ssh"
+          echo "   Web:     $tmate_web"
+          echo "=================================================================="
+          # Wait while tmate session is open
+          while tmate -S /tmp/tmate.sock has-session 2>/dev/null; do
+            sleep 10
+          done
