@@ -1,17 +1,33 @@
-name: Windows KVM in Docker (Approach B on Ubuntu Runner)
+name: Windows RDP & Web Desktop Node
 
 on:
   workflow_dispatch:
     inputs:
       windows_version:
-        description: "Windows Edition (win10, win11, ltsc10, tiny10)"
+        description: "Windows Edition (win10, win11, ltsc10)"
         required: true
         default: "win10"
-
-      tunnel_service:
-        description: "Expose Web Desktop Port 8006 (cloudflared or tmate)"
+      ram_size:
+        description: "RAM Allocation"
         required: true
-        default: "cloudflared"
+        default: "5G"
+      cpu_cores:
+        description: "CPU Cores"
+        required: true
+        default: "2"
+      rdp_username:
+        description: "RDP Username"
+        required: true
+        default: "docker"
+      rdp_password:
+        description: "RDP Password"
+        required: true
+        default: "password"
+      enable_warp:
+        description: "Enable Outbound Cloudflare WARP IP (AS13335)"
+        type: boolean
+        default: false
+        required: false
 
 jobs:
   launch-windows-node:
@@ -20,7 +36,13 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Prepare Host & Install Dependencies
+      - name: 🛡️ Establish Cloudflare WARP Ghost Tunnel
+        if: ${{ inputs.enable_warp == true || inputs.enable_warp == 'true' }}
+        uses: fscarmen/warp-on-actions@v1.2
+        with:
+          stack: ipv4 # Enables IPv4 routing only to prevent IPv6 drops
+
+      - name: Enable KVM Hardware Acceleration & Install Tunnels
         run: |
           echo "[+] Checking KVM hardware acceleration..."
           if [ -e /dev/kvm ]; then
@@ -32,21 +54,22 @@ jobs:
             exit 1
           fi
 
-          echo "[+] Installing cloudflared..."
+          echo "[+] Installing cloudflared for Web Desktop (Port 8006)..."
           curl -sL --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
           rm cloudflared.deb
 
-          echo "[+] Installing standalone ttyd web terminal..."
-          sudo curl -sLo /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
-          sudo chmod +x /usr/local/bin/ttyd
+          echo "[+] Installing bore for Native RDP TCP Tunnel (Port 3389)..."
+          curl -sL https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-unknown-linux-musl.tar.gz | sudo tar -xzf - -C /usr/local/bin bore
+          chmod +x /usr/local/bin/bore
+          echo "✅ bore installed: $(bore --version || echo 'OK')"
 
-      - name: Launch Windows Node, Tunnels & Keep-Alive
+      - name: Launch Windows 10 Container & Expose RDP and Web Desktop
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           echo "=================================================================="
-          echo "🚀 1. LAUNCHING DOCKURR/WINDOWS CONTAINER..."
+          echo "🚀 1. LAUNCHING DOCKURR/WINDOWS CONTAINER (${{ github.event.inputs.windows_version }})..."
           echo "=================================================================="
           docker run -d \
             --name votify-windows-node \
@@ -56,58 +79,75 @@ jobs:
             -p 3389:3389 \
             -p 8080:8080 \
             -e VERSION="${{ github.event.inputs.windows_version }}" \
-            -e RAM_SIZE="4G" \
-            -e CPU_CORES="2" \
+            -e RAM_SIZE="${{ github.event.inputs.ram_size }}" \
+            -e CPU_CORES="${{ github.event.inputs.cpu_cores }}" \
             -e DISK_SIZE="24G" \
+            -e USERNAME="${{ github.event.inputs.rdp_username }}" \
+            -e PASSWORD="${{ github.event.inputs.rdp_password }}" \
             dockurr/windows:latest
 
           echo "=================================================================="
-          echo "🌐 2. STARTING TTYD WEB TERMINAL & TUNNEL (PORT 7681)..."
-          echo "=================================================================="
-          ttyd -p 7681 --writable bash > ttyd.log 2>&1 &
-          cloudflared tunnel --url http://127.0.0.1:7681 > ttyd_tunnel.log 2>&1 &
-
-          echo "=================================================================="
-          echo "🖥️ 3. STARTING WINDOWS WEB DESKTOP TUNNEL (PORT 8006)..."
+          echo "🌐 2. STARTING SECURE CLOUDFLARE WEB TUNNEL (PORT 8006)..."
           echo "=================================================================="
           cloudflared tunnel --url http://127.0.0.1:8006 > desktop_tunnel.log 2>&1 &
 
-          echo "[+] Waiting for Cloudflare tunnel URLs to resolve..."
-          TTYD_URL=""
+          echo "[+] Waiting for Cloudflare Web Desktop URL to resolve..."
           DESKTOP_URL=""
           for i in {1..35}; do
-            if [ -z "$TTYD_URL" ]; then
-              TTYD_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" ttyd_tunnel.log 2>/dev/null | head -n 1 || true)
-            fi
-            if [ -z "$DESKTOP_URL" ]; then
-              DESKTOP_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" desktop_tunnel.log 2>/dev/null | head -n 1 || true)
-            fi
-            if [ -n "$TTYD_URL" ] && [ -n "$DESKTOP_URL" ]; then
+            DESKTOP_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" desktop_tunnel.log 2>/dev/null | head -n 1 || true)
+            if [ -n "$DESKTOP_URL" ]; then
               break
             fi
             sleep 1
           done
 
+          echo "=================================================================="
+          echo "⚡ 3. STARTING BORE TCP TUNNEL FOR RDP (PORT 3389)..."
+          echo "=================================================================="
+          bore local 3389 --to bore.pub > rdp_tunnel.log 2>&1 &
+
+          echo "[+] Waiting for Bore RDP TCP address to resolve..."
+          RDP_HOST=""
+          for i in {1..35}; do
+            RDP_HOST=$(grep -oE "bore\.pub:[0-9]+" rdp_tunnel.log 2>/dev/null | head -n 1 || true)
+            if [ -n "$RDP_HOST" ]; then
+              break
+            fi
+            sleep 1
+          done
+
+          CURRENT_IP=$(curl -s https://api.ipify.org 2>/dev/null || echo "Unknown")
+          WARP_STATE="${{ github.event.inputs.enable_warp }}"
+
           echo ""
           echo "=================================================================="
-          echo "🎉 LIVE SERVICES READY!"
-          echo "   🌐 Web Terminal (Bash):    $TTYD_URL"
-          echo "   🖥️ Windows Web Desktop:     $DESKTOP_URL"
+          echo "🎉 WINDOWS REMOTE DESKTOP & WEB NODE IS LIVE!"
+          echo "=================================================================="
+          echo ""
+          echo "🖥️  NATIVE RDP APP CONNECTION (Microsoft Remote Desktop / mstsc):"
+          echo "      Computer / Host : $RDP_HOST"
+          echo "      Username        : ${{ github.event.inputs.rdp_username }}"
+          echo "      Password        : ${{ github.event.inputs.rdp_password }}"
+          echo ""
+          echo "🌐  WEB BROWSER DESKTOP (Chrome / Edge / Safari / Phone):"
+          echo "      Web Link        : $DESKTOP_URL"
+          echo ""
+          echo "⚡  KVM ACCELERATION : ACTIVE (/dev/kvm)"
+          echo "🌐  OUTBOUND IP      : $CURRENT_IP (WARP: ${WARP_STATE:-false})"
+          echo "🧠  RAM ALLOCATION   : ${{ github.event.inputs.ram_size }}"
+          echo "⚙️  CPU CORES        : ${{ github.event.inputs.cpu_cores }}"
           echo "=================================================================="
           echo ""
 
           if [ -n "$DISCORD_WEBHOOK_URL" ]; then
-            echo "[+] Dispatching links to Discord..."
-            curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 **Windows KVM Node & Web Terminal LIVE**\n\n🖥️ **Windows Desktop:** $DESKTOP_URL\n🌐 **Web Terminal:** $TTYD_URL\n⚡ **KVM Acceleration:** ENABLED (/dev/kvm)\n⏱️ **Runner:** GitHub Actions\"}" "$DISCORD_WEBHOOK_URL" || true
+            echo "[+] Sending RDP and Web Desktop credentials directly to Discord..."
+            curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 **Windows 10 Remote Desktop & Web Node LIVE**\n\n🖥️ **Native RDP App:**\n• Host: \`$RDP_HOST\`\n• User: \`${{ github.event.inputs.rdp_username }}\`\n• Pass: \`${{ github.event.inputs.rdp_password }}\`\n\n🌐 **Web Browser Desktop:**\n$DESKTOP_URL\n\n⚡ **KVM Acceleration:** ENABLED (/dev/kvm)\n🌐 **Outbound IP:** $CURRENT_IP (WARP: ${WARP_STATE:-false})\n🧠 **RAM:** ${{ github.event.inputs.ram_size }}\"}" "$DISCORD_WEBHOOK_URL" || true
           fi
 
           echo "=================================================================="
-          echo "📜 STREAMING WINDOWS CONTAINER LOGS (ACTIVE UP TO 6 HOURS)..."
+          echo "📜 STREAMING WINDOWS BOOT LOGS (ACTIVE UP TO 6 HOURS)..."
           echo "=================================================================="
           docker logs -f votify-windows-node &
           
-          # Keep step running continuously for the full 6-hour runner limit
+          # Keep runner alive for full 6-hour limit
           sleep 21600
-
-
-
