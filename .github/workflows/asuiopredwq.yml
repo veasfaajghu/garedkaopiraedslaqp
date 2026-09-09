@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       windows_version:
-        description: "Windows Edition (tiny10, win10, win11)"
+        description: "Windows Edition (win10, win11, ltsc10, tiny10)"
         required: true
-        default: "tiny10"
+        default: "win10"
+
       tunnel_service:
         description: "Expose Web Desktop Port 8006 (cloudflared or tmate)"
         required: true
@@ -63,7 +64,7 @@ jobs:
           echo "=================================================================="
           echo "🌐 2. STARTING TTYD WEB TERMINAL & TUNNEL (PORT 7681)..."
           echo "=================================================================="
-          ttyd -p 7681 -w bash > ttyd.log 2>&1 &
+          ttyd -p 7681 --writable bash > ttyd.log 2>&1 &
           cloudflared tunnel --url http://127.0.0.1:7681 > ttyd_tunnel.log 2>&1 &
 
           echo "=================================================================="
@@ -107,7 +108,6 @@ jobs:
           
           # Keep step running continuously for the full 6-hour runner limit
           sleep 21600
-
 
 
 
