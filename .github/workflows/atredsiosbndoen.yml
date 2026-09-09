@@ -1,44 +1,89 @@
-name: Public Self-Contained Proxy Deployer
+name: Windows KVM in Docker (Approach B on Ubuntu Runner)
 
 on:
   workflow_dispatch:
     inputs:
-      node_name:
-        description: 'Name of this proxy node'
+      windows_version:
+        description: "Windows Edition (tiny10, win10, win11)"
         required: true
-        default: 'Public-Matrix-Node'
+        default: "tiny10"
+      tunnel_service:
+        description: "Expose Web Desktop Port 8006 (cloudflared or tmate)"
+        required: true
+        default: "cloudflared"
 
 jobs:
-  deploy-proxy:
+  launch-windows-node:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Start Dependency Matrix (Proxy)
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          IMAGE_URL: ${{ secrets.IMAGE_URL }}
+      - name: Verify & Enable KVM Permissions
         run: |
-          if [ -z "$IMAGE_URL" ]; then
-            echo "🚨 Error: IMAGE_URL secret is missing! Please add your Docker image URL (e.g., ghcr.io/username/repo/stealth-proxy:latest) to GitHub Secrets."
+          echo "[+] Checking KVM hardware availability..."
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+            ls -la /dev/kvm
+            echo "✅ /dev/kvm is ACTIVE and accessible!"
+          else
+            echo "❌ /dev/kvm not found!"
             exit 1
           fi
-          
-          echo "🚀 Pulling and starting proxy image: $IMAGE_URL"
-          
-          # The Docker container handles EVERYTHING internally now
-          docker run -d --name proxy-matrix -p 8080:8080 \
-            -e NO_WARP=false \
-            -e TG_BOT_TOKEN="${TG_BOT_TOKEN}" \
-            -e TG_CHAT_ID="${TG_CHAT_ID}" \
-            -e DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL}" \
-            "${IMAGE_URL}"
-            
-      - name: Maintain Active Cache Matrix (Keep-Alive)
+
+      - name: Install Cloudflared Tunnel
         run: |
-          # Keep the runner alive so the proxy stays online
-          docker logs -f proxy-matrix
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+          rm cloudflared.deb
+
+      - name: Launch dockurr/windows Container with KVM
+        run: |
+          docker run -d \
+            --name votify-windows-node \
+            --device /dev/kvm \
+            --cap-add NET_ADMIN \
+            -p 8006:8006 \
+            -p 3389:3389 \
+            -e VERSION="${{ github.event.inputs.windows_version }}" \
+            -e RAM_SIZE="4G" \
+            -e CPU_CORES="2" \
+            -e DISK_SIZE="24G" \
+            dockurr/windows:latest
+
+          echo "[+] Container launched. Checking initial container logs..."
+          sleep 5
+          docker logs votify-windows-node | head -n 25
+
+      - name: Expose Windows Web Desktop (Port 8006) via Cloudflare Tunnel
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          echo "=================================================================="
+          echo "🌐 STARTING PUBLIC SECURE TUNNEL TO WINDOWS WEB DESKTOP..."
+          echo "=================================================================="
+          cloudflared tunnel --url http://127.0.0.1:8006 > tunnel.log 2>&1 &
+          
+          # Wait for public URL to appear in tunnel.log
+          for i in {1..20}; do
+            TUNNEL_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" tunnel.log | head -n 1 || true)
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "🎉 SUCCESS! Your Windows Web Desktop is LIVE at:"
+              echo ""
+              echo "      👉 $TUNNEL_URL 👈"
+              echo ""
+              echo "Open this link in your browser to view and control Windows in real-time!"
+
+              if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+                echo "[+] Sending Desktop URL directly to Discord..."
+                curl -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 Windows KVM Node LIVE (Approach B)**\n\n🖥️ **Web Desktop: $TUNNEL_URL\n⚡ KVM Acceleration: ENABLED (/dev/kvm)\n⏱️ Runner: GitHub Actions (Ubuntu x86_64)\"}" "$DISCORD_WEBHOOK_URL" || true
+              fi
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Start SSH Interactive Session (tmate)
+        uses: mxschmitt/action-tmate@v3
+        with:
+          detached: false
