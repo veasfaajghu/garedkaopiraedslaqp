@@ -47,7 +47,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           echo "[+] Starting ttyd on port 7681..."
-          nohup ttyd -p 7681 -W bash > ttyd.log 2>&1 &
+          nohup ttyd -p 7681 -w bash > ttyd.log 2>&1 &
           sleep 1
 
           echo "[+] Exposing ttyd Web Terminal via Cloudflare Tunnel..."
@@ -129,4 +129,5 @@ jobs:
           while pgrep -x "ttyd" > /dev/null; do
             sleep 15
           done
+
 
