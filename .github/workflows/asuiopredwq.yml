@@ -31,32 +31,28 @@ jobs:
             exit 1
           fi
 
-      - name: Start tmate Interactive SSH & Web Shell Session (Foreground Access)
-        id: setup-tmate
+      - name: Start tmate Interactive SSH & Web Shell Session
+        uses: mxschmitt/action-tmate@v3
+        with:
+          detached: true
+          limit-access-to-actor: false
+
+      - name: Send Shell Links to Discord & Console
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          echo "[+] Installing and initializing tmate..."
-          sudo apt-get update -y > /dev/null 2>&1
-          sudo apt-get install -y tmate openssh-client > /dev/null 2>&1
-          
-          # Start background tmate socket
-          tmate -S /tmp/tmate.sock new-session -d
-          tmate -S /tmp/tmate.sock wait tmate-ready
-          
-          TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
-          TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
-          
+          sleep 3
+          TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null || true)
+          TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}' 2>/dev/null || true)
           echo "=================================================================="
           echo "⚡ TMATE SSH & WEB TERMINAL ARE READY!"
           echo "   SSH Command:    $TMATE_SSH"
           echo "   Web Shell URL:  $TMATE_WEB"
           echo "=================================================================="
-          
           echo "tmate_ssh=$TMATE_SSH" >> $GITHUB_ENV
           echo "tmate_web=$TMATE_WEB" >> $GITHUB_ENV
 
-          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+          if [ -n "$DISCORD_WEBHOOK_URL" ] && [ -n "$TMATE_WEB" ]; then
             echo "[+] Sending tmate SSH & Web Terminal links to Discord..."
             curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"⚡ Windows Runner Interactive Shell is READY**\n\n💻 **SSH Command: \`$TMATE_SSH\`\n🌐 Web Terminal: $TMATE_WEB\n⏱️ Runner: GitHub Actions (Ubuntu x86_64)\"}" "$DISCORD_WEBHOOK_URL" || true
           fi
@@ -98,7 +94,7 @@ jobs:
           for i in {1..30}; do
             TUNNEL_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" tunnel.log | head -n 1 || true)
             if [ -n "$TUNNEL_URL" ]; then
-             echo "🎉 SUCCESS! Your Windows Web Desktop is LIVE at:"
+              echo "🎉 SUCCESS! Your Windows Web Desktop is LIVE at:"
               echo ""
               echo "      👉 $TUNNEL_URL 👈"
               echo ""
