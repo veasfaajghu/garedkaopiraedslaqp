@@ -36,6 +36,7 @@ jobs:
         with:
           detached: true
           limit-access-to-actor: false
+          install-dependencies: false
 
       - name: Send Shell Links to Discord & Console
         env:
