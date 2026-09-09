@@ -98,7 +98,7 @@ jobs:
           for i in {1..30}; do
             TUNNEL_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" tunnel.log | head -n 1 || true)
             if [ -n "$TUNNEL_URL" ]; then
-echo "🎉 SUCCESS! Your Windows Web Desktop is LIVE at:"
+             echo "🎉 SUCCESS! Your Windows Web Desktop is LIVE at:"
               echo ""
               echo "      👉 $TUNNEL_URL 👈"
               echo ""
