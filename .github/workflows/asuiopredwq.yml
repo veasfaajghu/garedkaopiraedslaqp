@@ -48,10 +48,16 @@ jobs:
 
           echo "[+] Initializing tmate background session..."
           tmate -S /tmp/tmate.sock new-session -d
-          tmate -S /tmp/tmate.sock wait tmate-ready
-          
-          TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
-          TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}')
+          # Poll until connection token is ready (max 10s) without blocking
+          for i in {1..10}; do
+            TMATE_SSH=$(tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null || true)
+            TMATE_WEB=$(tmate -S /tmp/tmate.sock display -p '#{tmate_web}' 2>/dev/null || true)
+            if [ -n "$TMATE_SSH" ]; then
+              break
+            fi
+            sleep 1
+          done
+
           
           echo "=================================================================="
           echo "⚡ TMATE SSH & WEB TERMINAL ARE READY!"
