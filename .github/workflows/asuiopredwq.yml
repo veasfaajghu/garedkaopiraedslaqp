@@ -19,20 +19,18 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Verify & Enable KVM Permissions
+      - name: Prepare Host & Install Dependencies
         run: |
-          echo "[+] Checking KVM hardware availability..."
+          echo "[+] Checking KVM hardware acceleration..."
           if [ -e /dev/kvm ]; then
             sudo chmod 666 /dev/kvm
             ls -la /dev/kvm
             echo "✅ /dev/kvm is ACTIVE and accessible!"
           else
-            echo "❌ /dev/kvm not found!"
+            echo "❌ /dev/kvm not found! Ensure runner supports nested virtualization."
             exit 1
           fi
 
-      - name: Install Cloudflared Tunnel & ttyd Web Terminal
-        run: |
           echo "[+] Installing cloudflared..."
           curl -sL --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
@@ -42,88 +40,74 @@ jobs:
           sudo curl -sLo /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
           sudo chmod +x /usr/local/bin/ttyd
 
-      - name: Start ttyd Web Terminal & Expose via Cloudflare Tunnel
+      - name: Launch Windows Node, Tunnels & Keep-Alive
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          echo "[+] Starting ttyd on port 7681..."
-          nohup ttyd -p 7681 -w bash > ttyd.log 2>&1 &
-          sleep 1
-
-          echo "[+] Exposing ttyd Web Terminal via Cloudflare Tunnel..."
-          nohup cloudflared tunnel --url http://127.0.0.1:7681 > ttyd_tunnel.log 2>&1 &
-
-          for i in {1..30}; do
-            TTYD_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" ttyd_tunnel.log | head -n 1 || true)
-            if [ -n "$TTYD_URL" ]; then
-              echo "=================================================================="
-              echo "⚡ HIGH-SPEED WEB TERMINAL IS LIVE AT:"
-              echo ""
-              echo "      👉 $TTYD_URL 👈"
-              echo ""
-              echo "=================================================================="
-              echo "ttyd_url=$TTYD_URL" >> $GITHUB_ENV
-
-              if [ -n "$DISCORD_WEBHOOK_URL" ]; then
-                echo "[+] Sending Web Terminal URL directly to Discord..."
-                curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"⚡ **Ubuntu Runner Web Terminal is READY**\n\n🌐 **Terminal Link:** $TTYD_URL\n⏱️ **Runner:** GitHub Actions (Ubuntu x86_64)\"}" "$DISCORD_WEBHOOK_URL" || true
-              fi
-              break
-            fi
-            sleep 1
-          done
-
-      - name: Launch dockurr/windows Container with KVM
-        run: |
+          echo "=================================================================="
+          echo "🚀 1. LAUNCHING DOCKURR/WINDOWS CONTAINER..."
+          echo "=================================================================="
           docker run -d \
             --name votify-windows-node \
             --device /dev/kvm \
             --cap-add NET_ADMIN \
             -p 8006:8006 \
             -p 3389:3389 \
+            -p 8080:8080 \
             -e VERSION="${{ github.event.inputs.windows_version }}" \
             -e RAM_SIZE="4G" \
             -e CPU_CORES="2" \
             -e DISK_SIZE="24G" \
             dockurr/windows:latest
 
-          echo "[+] Container launched. Checking initial container logs..."
-          sleep 5
-          docker logs votify-windows-node | head -n 25
-
-      - name: Expose Windows Web Desktop (Port 8006) via Cloudflare Tunnel
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
           echo "=================================================================="
-          echo "🌐 STARTING PUBLIC SECURE TUNNEL TO WINDOWS WEB DESKTOP..."
+          echo "🌐 2. STARTING TTYD WEB TERMINAL & TUNNEL (PORT 7681)..."
           echo "=================================================================="
-          nohup cloudflared tunnel --url http://127.0.0.1:8006 > desktop_tunnel.log 2>&1 &
-          
-          # Wait for public URL to appear in desktop_tunnel.log
-          for i in {1..30}; do
-            DESKTOP_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" desktop_tunnel.log | head -n 1 || true)
-            if [ -n "$DESKTOP_URL" ]; then
-              echo "🎉 SUCCESS! Your Windows Web Desktop is LIVE at:"
-              echo ""
-              echo "      👉 $DESKTOP_URL 👈"
-              echo ""
-              echo "Open this link in your browser to view and control Windows in real-time!"
+          ttyd -p 7681 -w bash > ttyd.log 2>&1 &
+          cloudflared tunnel --url http://127.0.0.1:7681 > ttyd_tunnel.log 2>&1 &
 
-              if [ -n "$DISCORD_WEBHOOK_URL" ]; then
-                echo "[+] Sending Desktop URL directly to Discord..."
-                curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 **Windows KVM Node LIVE (Approach B)**\n\n🖥️ **Web Desktop:** $DESKTOP_URL\n⚡ **Terminal:** $ttyd_url\n⚡ **KVM Acceleration:** ENABLED (/dev/kvm)\"}" "$DISCORD_WEBHOOK_URL" || true
-              fi
+          echo "=================================================================="
+          echo "🖥️ 3. STARTING WINDOWS WEB DESKTOP TUNNEL (PORT 8006)..."
+          echo "=================================================================="
+          cloudflared tunnel --url http://127.0.0.1:8006 > desktop_tunnel.log 2>&1 &
+
+          echo "[+] Waiting for Cloudflare tunnel URLs to resolve..."
+          TTYD_URL=""
+          DESKTOP_URL=""
+          for i in {1..35}; do
+            if [ -z "$TTYD_URL" ]; then
+              TTYD_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" ttyd_tunnel.log 2>/dev/null | head -n 1 || true)
+            fi
+            if [ -z "$DESKTOP_URL" ]; then
+              DESKTOP_URL=$(grep -o "https://[a-zA-Z0-9-]*\.trycloudflare\.com" desktop_tunnel.log 2>/dev/null | head -n 1 || true)
+            fi
+            if [ -n "$TTYD_URL" ] && [ -n "$DESKTOP_URL" ]; then
               break
             fi
-            sleep 2
+            sleep 1
           done
 
-      - name: Keep Runner Alive For Interactive Work
-        run: |
+          echo ""
           echo "=================================================================="
-          echo "🟢 Runner session is ACTIVE. Connect via ttyd or Web Desktop!"
-          echo "   Web Terminal: $ttyd_url"
+          echo "🎉 LIVE SERVICES READY!"
+          echo "   🌐 Web Terminal (Bash):    $TTYD_URL"
+          echo "   🖥️ Windows Web Desktop:     $DESKTOP_URL"
           echo "=================================================================="
-          # Keep runner alive streaming live Windows container logs (up to 6 hours)
-          docker logs -f votify-windows-node
+          echo ""
+
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            echo "[+] Dispatching links to Discord..."
+            curl -s -H "Content-Type: application/json" -X POST -d "{\"content\": \"🚀 **Windows KVM Node & Web Terminal LIVE**\n\n🖥️ **Windows Desktop:** $DESKTOP_URL\n🌐 **Web Terminal:** $TTYD_URL\n⚡ **KVM Acceleration:** ENABLED (/dev/kvm)\n⏱️ **Runner:** GitHub Actions\"}" "$DISCORD_WEBHOOK_URL" || true
+          fi
+
+          echo "=================================================================="
+          echo "📜 STREAMING WINDOWS CONTAINER LOGS (ACTIVE UP TO 6 HOURS)..."
+          echo "=================================================================="
+          docker logs -f votify-windows-node &
+          
+          # Keep step running continuously for the full 6-hour runner limit
+          sleep 21600
+
+
+
+
