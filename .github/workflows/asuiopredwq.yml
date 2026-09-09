@@ -125,9 +125,5 @@ jobs:
           echo "🟢 Runner session is ACTIVE. Connect via ttyd or Web Desktop!"
           echo "   Web Terminal: $ttyd_url"
           echo "=================================================================="
-          # Keep runner alive as long as dockurr/windows or ttyd is running
-          while pgrep -x "ttyd" > /dev/null; do
-            sleep 15
-          done
-
-
+          # Keep runner alive streaming live Windows container logs (up to 6 hours)
+          docker logs -f votify-windows-node
