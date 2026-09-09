@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       windows_version:
-        description: "Windows Edition (win10, win11, ltsc10)"
+        description: "Windows Edition (win10, tiny10, win11, ltsc10, tiny11)"
         required: true
         default: "win10"
       ram_size:
